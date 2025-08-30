@@ -14,18 +14,43 @@ CORS(app)
 def scrape_account(rollno, password):
     session = requests.Session()
     try:
-        # Step 1: Login
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Referer": "https://studentscorner.vardhaman.org/",
+            "Origin": "https://studentscorner.vardhaman.org",
+        }
+
         login_url = "https://studentscorner.vardhaman.org/"
-        login_data = {"rollno": rollno, "wak": password, "ok": "SignIn"}
-        res = session.post(login_url, data=login_data)
+
+        # Step 1: Load login page (get cookies + hidden fields)
+        login_page = session.get(login_url, headers=headers)
+        login_page.raise_for_status()
+
+        soup = BeautifulSoup(login_page.text, "html.parser")
+        hidden_inputs = {
+            tag["name"]: tag.get("value", "")
+            for tag in soup.find_all("input", type="hidden")
+            if tag.get("name")
+        }
+
+        # Step 2: Submit login
+        login_data = {
+            "rollno": rollno,
+            "wak": password,
+            "ok": "SignIn",
+            **hidden_inputs,  # include CSRF tokens if present
+        }
+
+        res = session.post(login_url, data=login_data, headers=headers)
         res.raise_for_status()
 
-        # Step 2: Credit Register
+        # Step 3: Credit Register
         reg_url = "https://studentscorner.vardhaman.org/src_programs/students_corner/CreditRegister/credit_register.php"
-        reg_res = session.get(reg_url)
+        reg_res = session.get(reg_url, headers=headers)
         reg_res.raise_for_status()
 
-        # Step 3: Parse
+        # Step 4: Parse
         data = parse_marks(reg_res.text)
         data["student"]["roll_number"] = rollno
         return {**data, "status": "success"}
@@ -112,9 +137,14 @@ def extract_number(text):
 
 
 # --- API endpoint ---
-@app.route("/scrape", methods=["POST"])
+@app.route("/scrape", methods=["POST", "GET"])
 def scrape_multiple():
-    accounts = request.json  # Expect list of {roll_number, password}
+    if request.method == "GET":
+        # Simply return a message for GET
+        return jsonify({"message": "Send a POST request with JSON body containing accounts."}), 200
+
+    # POST method: expects JSON list of accounts
+    accounts = request.get_json()  # safer than request.json
     if not isinstance(accounts, list):
         return jsonify({"error": "Invalid input, must be a list"}), 400
 
@@ -124,8 +154,11 @@ def scrape_multiple():
         for f in as_completed(futures):
             results.append(f.result())
 
-    return jsonify(results)
+    return jsonify(results), 200
 
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"message": "Vardhaman Flask Scraper is running. Use the /scrape endpoint to POST accounts."}), 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(debug=True)
